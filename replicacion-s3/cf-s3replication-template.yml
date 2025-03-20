@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Template IAM Role para S3 Batch Operations y replicación de objetos preexistentes. Creación Bucket S3 de destino de la replicación"
+
+Parameters:
+  SourceBucket:
+    Type: String
+    Description: "Nombre del bucket de origen"
+
+  DestinationBucket:
+    Type: String
+    Description: "Nombre del bucket de destino"
+
+Resources:
+  # ✅ Bucket de destino con buenas prácticas para replicación
+  DestinationS3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Ref DestinationBucket
+      VersioningConfiguration:
+        Status: Enabled  # Habilita versionado para replicación segura
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms  # Cifrado con KMS
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      ObjectOwnership: BucketOwnerPreferred  # Evita problemas con replicación
+      LifecycleConfiguration:
+        Rules:
+          - Id: "MoveOldVersionsToGlacier"
+            Status: Enabled
+            Prefix: ""
+            Transitions:
+              - StorageClass: GLACIER  # Reduce costos de almacenamiento
+                TransitionInDays: 90
+          - Id: "DeleteOldVersions"
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 365  # Elimina versiones antiguas después de 1 año
+
+  # ✅ IAM Role para replicación S3 + Batch Operations
+  S3ReplicationRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: "AWSRoleS3-Replication"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "s3.amazonaws.com"
+                - "batchoperations.s3.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "S3ReplicationPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # ✅ Permisos sobre el bucket de ORIGEN
+              - Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:GetObjectVersionAcl"
+                  - "s3:GetObjectVersionTagging"
+                  - "s3:ListBucket"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetReplicationConfiguration"
+                  - "s3:GetBucketVersioning"
+                  - "s3:PutInventoryConfiguration"
+                Resource:
+                  - !Sub "arn:aws:s3:::${SourceBucket}"
+                  - !Sub "arn:aws:s3:::${SourceBucket}/*"
+
+              # ✅ Permisos sobre el bucket de DESTINO
+              - Effect: "Allow"
+                Action:
+                  - "s3:ReplicateObject"
+                  - "s3:ReplicateTags"
+                  - "s3:ReplicateDelete"
+                  - "s3:ObjectOwnerOverrideToBucketOwner"
+                  - "s3:ListBucket"
+                  - "s3:GetBucketVersioning"
+                Resource:
+                  - !Sub "arn:aws:s3:::${DestinationBucket}"
+                  - !Sub "arn:aws:s3:::${DestinationBucket}/*"
+
+              # ✅ Permisos para S3 Batch Operations
+              - Effect: "Allow"
+                Action:
+                  - "s3:CreateJob"
+                  - "s3:DescribeJob"
+                  - "s3:UpdateJobPriority"
+                  - "s3:UpdateJobStatus"
+                  - "s3:ListJobs"
+                Resource: "*"
+
+              # ✅ Permisos para lectura en el bucket de origen
+              - Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:GetObjectTagging"
+                  - "s3:GetObjectAcl"
+                Resource:
+                  - !Sub "arn:aws:s3:::${SourceBucket}/*"
+
+              # ✅ Permisos para escritura en el bucket de destino
+              - Effect: "Allow"
+                Action:
+                  - "s3:PutObject"
+                  - "s3:PutObjectAcl"
+                  - "s3:PutObjectTagging"
+                Resource:
+                  - !Sub "arn:aws:s3:::${DestinationBucket}/*"
+
+Outputs:
+  RoleArn:
+    Description: "ARN del Role creado"
+    Value: !GetAtt S3ReplicationRole.Arn
+
+  DestinationBucketName:
+    Description: "Nombre del bucket de destino creado"
+    Value: !Ref DestinationS3Bucket
